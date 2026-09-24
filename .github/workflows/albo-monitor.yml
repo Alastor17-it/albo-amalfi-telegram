@@ -26,9 +26,10 @@ jobs:
         with:
           node-version: "22"
 
-      - name: Estrai il progetto
+      - name: Estrai progetto
         shell: bash
         run: |
+          rm -rf albo-amalfi-telegram-v3
           unzip -o albo-amalfi-telegram-v3.zip
           echo "ZIP estratto"
 
@@ -41,6 +42,37 @@ jobs:
           else
             echo "Prima esecuzione: verrà creata la baseline"
           fi
+
+      - name: Aggiungi supporto Topic Telegram
+        shell: bash
+        run: |
+          python3 <<'PY'
+          from pathlib import Path
+
+          path = Path("albo-amalfi-telegram-v3/monitor.mjs")
+          text = path.read_text()
+
+          old = """const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';"""
+          new = """const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+          const TELEGRAM_THREAD_ID = process.env.TELEGRAM_THREAD_ID || '';"""
+
+          if "TELEGRAM_THREAD_ID" not in text:
+              text = text.replace(old, new)
+
+          old_body = """      chat_id: TELEGRAM_CHAT_ID,
+                text,"""
+
+          new_body = """      chat_id: TELEGRAM_CHAT_ID,
+                ...(TELEGRAM_THREAD_ID
+                  ? { message_thread_id: Number(TELEGRAM_THREAD_ID) }
+                  : {}),
+                text,"""
+
+          if "message_thread_id" not in text:
+              text = text.replace(old_body, new_body)
+
+          path.write_text(text)
+          PY
 
       - name: Installa dipendenze
         working-directory: albo-amalfi-telegram-v3
@@ -55,6 +87,7 @@ jobs:
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
         run: npm run check
 
       - name: Recupera nuovo stato
