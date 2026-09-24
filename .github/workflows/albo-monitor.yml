@@ -27,24 +27,24 @@ jobs:
           node-version: "22"
 
       - name: Estrai progetto
-        shell: bash
         run: |
           rm -rf albo-amalfi-telegram-v3
           unzip -o albo-amalfi-telegram-v3.zip
-          echo "ZIP estratto"
 
-      - name: Ripristina stato precedente
-        shell: bash
+      - name: Ripristina stato
         run: |
           if [ -f state.json ]; then
             cp state.json albo-amalfi-telegram-v3/state.json
-            echo "Stato precedente ripristinato"
-          else
-            echo "Prima esecuzione: verrà creata la baseline"
           fi
 
-      - name: Aggiungi supporto Topic Telegram
-        shell: bash
+      - name: Installa dipendenze
+        working-directory: albo-amalfi-telegram-v3
+        run: |
+          npm install --no-audit --no-fund
+          npm install --no-save playwright-extra puppeteer-extra-plugin-stealth
+          npx playwright install --with-deps chromium
+
+      - name: Applica modalità stealth e Topic Telegram
         run: |
           python3 <<'PY'
           from pathlib import Path
@@ -52,35 +52,62 @@ jobs:
           path = Path("albo-amalfi-telegram-v3/monitor.mjs")
           text = path.read_text()
 
-          old = """const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';"""
-          new = """const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
-          const TELEGRAM_THREAD_ID = process.env.TELEGRAM_THREAD_ID || '';"""
+          text = text.replace(
+              "import { chromium } from 'playwright';",
+              """import { chromium } from 'playwright-extra';
+          import StealthPlugin from 'puppeteer-extra-plugin-stealth';
+          chromium.use(StealthPlugin());"""
+          )
 
           if "TELEGRAM_THREAD_ID" not in text:
-              text = text.replace(old, new)
+              text = text.replace(
+                  "const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';",
+                  """const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID || '';
+          const TELEGRAM_THREAD_ID = process.env.TELEGRAM_THREAD_ID || '';"""
+              )
 
-          old_body = """      chat_id: TELEGRAM_CHAT_ID,
-                text,"""
-
-          new_body = """      chat_id: TELEGRAM_CHAT_ID,
+          if "message_thread_id" not in text:
+              text = text.replace(
+                  "chat_id: TELEGRAM_CHAT_ID,\n      text,",
+                  """chat_id: TELEGRAM_CHAT_ID,
                 ...(TELEGRAM_THREAD_ID
                   ? { message_thread_id: Number(TELEGRAM_THREAD_ID) }
                   : {}),
                 text,"""
+              )
 
-          if "message_thread_id" not in text:
-              text = text.replace(old_body, new_body)
+          old = """await page.waitForSelector('a[href*="albo_dettagli.php?id="]', { timeout: 30000 });"""
 
+          new = """
+          try {
+            await page.waitForSelector(
+              'a[href*="albo_dettagli.php?id="]',
+              { timeout: 45000 }
+            );
+          } catch (e) {
+            console.log("===== DEBUG ALBO =====");
+            console.log("URL:", page.url());
+            console.log("TITLE:", await page.title());
+            console.log(
+              "BODY:",
+              (await page.locator('body').innerText().catch(() => ''))
+                .slice(0, 4000)
+            );
+
+            await page.screenshot({
+              path: 'albo-debug.png',
+              fullPage: true
+            }).catch(() => {});
+
+            throw new Error(
+              "Albo non leggibile dal runner GitHub. Probabile blocco anti-bot/IP cloud."
+            );
+          }
+          """
+
+          text = text.replace(old, new)
           path.write_text(text)
           PY
-
-      - name: Installa dipendenze
-        working-directory: albo-amalfi-telegram-v3
-        run: npm install --no-audit --no-fund
-
-      - name: Installa Chromium
-        working-directory: albo-amalfi-telegram-v3
-        run: npx playwright install --with-deps chromium
 
       - name: Controlla Albo Pretorio
         working-directory: albo-amalfi-telegram-v3
@@ -90,9 +117,16 @@ jobs:
           TELEGRAM_THREAD_ID: ${{ secrets.TELEGRAM_THREAD_ID }}
         run: npm run check
 
+      - name: Carica diagnostica
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: albo-debug
+          path: albo-amalfi-telegram-v3/albo-debug.png
+          if-no-files-found: ignore
+
       - name: Recupera nuovo stato
         if: always()
-        shell: bash
         run: |
           if [ -f albo-amalfi-telegram-v3/state.json ]; then
             cp albo-amalfi-telegram-v3/state.json state.json
@@ -100,10 +134,8 @@ jobs:
 
       - name: Salva stato
         if: always()
-        shell: bash
         run: |
           if [ ! -f state.json ]; then
-            echo "Nessuno stato da salvare"
             exit 0
           fi
 
@@ -113,7 +145,6 @@ jobs:
           git add state.json
 
           if git diff --cached --quiet; then
-            echo "Nessuna modifica allo stato"
             exit 0
           fi
 
