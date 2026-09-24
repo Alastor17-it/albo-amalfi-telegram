@@ -1,0 +1,88 @@
+name: Albo Pretorio Amalfi → Telegram
+
+on:
+  schedule:
+    - cron: "7,37 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: albo-amalfi-monitor
+  cancel-in-progress: false
+
+jobs:
+  monitor:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Estrai il progetto
+        shell: bash
+        run: |
+          unzip -o albo-amalfi-telegram-v3.zip
+          echo "ZIP estratto"
+
+      - name: Ripristina stato precedente
+        shell: bash
+        run: |
+          if [ -f state.json ]; then
+            cp state.json albo-amalfi-telegram-v3/state.json
+            echo "Stato precedente ripristinato"
+          else
+            echo "Prima esecuzione: verrà creata la baseline"
+          fi
+
+      - name: Installa dipendenze
+        working-directory: albo-amalfi-telegram-v3
+        run: npm install --no-audit --no-fund
+
+      - name: Installa Chromium
+        working-directory: albo-amalfi-telegram-v3
+        run: npx playwright install --with-deps chromium
+
+      - name: Controlla Albo Pretorio
+        working-directory: albo-amalfi-telegram-v3
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: npm run check
+
+      - name: Recupera nuovo stato
+        if: always()
+        shell: bash
+        run: |
+          if [ -f albo-amalfi-telegram-v3/state.json ]; then
+            cp albo-amalfi-telegram-v3/state.json state.json
+          fi
+
+      - name: Salva stato
+        if: always()
+        shell: bash
+        run: |
+          if [ ! -f state.json ]; then
+            echo "Nessuno stato da salvare"
+            exit 0
+          fi
+
+          git config user.name "albo-amalfi-bot"
+          git config user.email "albo-amalfi-bot@users.noreply.github.com"
+
+          git add state.json
+
+          if git diff --cached --quiet; then
+            echo "Nessuna modifica allo stato"
+            exit 0
+          fi
+
+          git commit -m "chore: aggiorna stato Albo"
+          git push
